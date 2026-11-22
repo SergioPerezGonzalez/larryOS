@@ -1,0 +1,95 @@
+{
+  "archinstall-language": "Spanish",
+  "version": "4.5",
+  "script": "guided",
+  "hostname": "larryos",
+  "locale_config": {
+    "kb_layout": "es",
+    "sys_enc": "UTF-8",
+    "sys_lang": "es_ES"
+  },
+  "timezone": "Europe/Madrid",
+  "ntp": true,
+  "bootloader_config": {
+    "bootloader": "Systemd-boot",
+    "uki": false,
+    "removable": false
+  },
+  "kernels": [
+    "linux"
+  ],
+  "firmware_optdeps": [],
+  "swap": {
+    "enabled": true,
+    "algorithm": "zstd"
+  },
+  "network_config": {
+    "type": "nm"
+  },
+  "audio_config": {
+    "audio": "pipewire"
+  },
+  "profile_config": {
+    "profile": {
+      "main": "Minimal",
+      "details": []
+    }
+  },
+  "mirror_config": {
+    "mirror_regions": {},
+    "custom_servers": [
+      {
+        "url": "https://geo.mirror.pkgbuild.com/$repo/os/$arch"
+      }
+    ],
+    "custom_repositories": [],
+    "optional_repositories": []
+  },
+  "pacman_config": {
+    "color": true,
+    "parallel_downloads": 8
+  },
+  "packages": [
+    "intel-ucode",
+    "sof-firmware",
+    "alsa-ucm-conf",
+    "mesa",
+    "vulkan-intel",
+    "vulkan-icd-loader",
+    "vulkan-tools",
+    "level-zero-loader",
+    "intel-npu-driver",
+    "bluez",
+    "bluez-utils",
+    "base-devel",
+    "git",
+    "cmake",
+    "ninja",
+    "shaderc",
+    "vulkan-headers",
+    "spirv-headers",
+    "openssl",
+    "curl",
+    "sqlite",
+    "uv",
+    "jq",
+    "pciutils",
+    "usbutils",
+    "htop",
+    "nano",
+    "openssh"
+  ],
+  "services": [
+    "bluetooth.service",
+    "fstrim.timer"
+  ],
+  "custom_commands": [
+    "set -euo pipefail\n# 1) Clave de firma de CachyOS\npacman-key --recv-keys F3B607488DB35A47 --keyserver keyserver.ubuntu.com\npacman-key --lsign-key F3B607488DB35A47\ncp -a /etc/pacman.conf /etc/pacman.conf.pre-cachyos\n# 2) Repo temporal SOLO para traer keyring + mirrorlists (sin versiones fijadas)\ncat >> /etc/pacman.conf <<'EOF'\n\n[cachyos]\nSigLevel = Optional TrustAll\nServer = https://mirror.cachyos.org/repo/$arch/$repo\nEOF\npacman -Sy --noconfirm cachyos-keyring cachyos-mirrorlist cachyos-v3-mirrorlist\n# 3) pacman.conf definitivo: repos x86-64-v3 (Arrow Lake NO tiene AVX-512 -> v4 no aplica)\ncp -a /etc/pacman.conf.pre-cachyos /etc/pacman.conf\nawk '/^\\[core\\]/ && !done {\n  print \"[cachyos-v3]\\nInclude = /etc/pacman.d/cachyos-v3-mirrorlist\\n\"\n  print \"[cachyos-core-v3]\\nInclude = /etc/pacman.d/cachyos-v3-mirrorlist\\n\"\n  print \"[cachyos-extra-v3]\\nInclude = /etc/pacman.d/cachyos-v3-mirrorlist\\n\"\n  print \"[cachyos]\\nInclude = /etc/pacman.d/cachyos-mirrorlist\\n\"\n  done=1 } { print }' /etc/pacman.conf.pre-cachyos > /etc/pacman.conf\nsed -i 's/^#\\?Architecture = .*/Architecture = x86_64 x86_64_v3/' /etc/pacman.conf\npacman -Syu --noconfirm\npacman -Si linux-cachyos >/dev/null\n",
+    "set -euo pipefail\npacman -S --noconfirm --needed linux-cachyos\ntest -f /boot/vmlinuz-linux-cachyos\ntest -f /boot/initramfs-linux-cachyos.img\n# Entrada systemd-boot derivada de la que genero archinstall para el kernel \"linux\"\nsrc=\"\"\nfor f in /boot/loader/entries/*_linux.conf; do src=\"$f\"; break; done\ntest -f \"$src\"\nsed -e 's|^title .*|title   LarryOS (linux-cachyos)|' \\\n    -e 's|/vmlinuz-linux$|/vmlinuz-linux-cachyos|' \\\n    -e 's|/initramfs-linux\\.img|/initramfs-linux-cachyos.img|' \\\n    \"$src\" > /boot/loader/entries/larryos-cachyos.conf\nif grep -q '^default' /boot/loader/loader.conf; then\n  sed -i 's|^default .*|default larryos-cachyos.conf|' /boot/loader/loader.conf\nelse\n  echo 'default larryos-cachyos.conf' >> /boot/loader/loader.conf\nfi\ngrep -q '^timeout' /boot/loader/loader.conf || echo 'timeout 3' >> /boot/loader/loader.conf\n",
+    "set -euo pipefail\n# archinstall instala siempre el metapaquete linux-firmware (arrastra amd, amdgpu, nvidia, radeon...).\n# Lo sustituimos por los sub-paquetes que el hardware REAL de este portatil necesita.\nkeep=\"linux-firmware-intel\"   # iGPU (GuC/HuC), NPU (intel/vpu), Bluetooth/Wi-Fi Intel, microcodigo de red\npci_vendor() { local d; for d in /sys/bus/pci/devices/*; do\n  if [ -f \"$d/class\" ] && [ \"$(cut -c1-6 \"$d/class\")\" = \"$1\" ]; then cat \"$d/vendor\"; fi; done; return 0; }\nusb_bt_vendor() { local d; for d in /sys/bus/usb/devices/*; do\n  if [ -f \"$d/bDeviceClass\" ] && [ \"$(cat \"$d/bDeviceClass\")\" = \"e0\" ]; then cat \"$d/idVendor\"; fi; done; return 0; }\nvendors=\"$(pci_vendor 0x0280) $(usb_bt_vendor)\"   # 0x0280 = controlador de red inalambrico\nknown=0\nfor v in $vendors; do case \"$v\" in\n  0x8086|8087) known=1 ;;\n  0x10ec|0bda) keep=\"$keep linux-firmware-realtek\"; known=1 ;;\n  0x14c3|0e8d) keep=\"$keep linux-firmware-mediatek\"; known=1 ;;\n  0x168c|0cf3) keep=\"$keep linux-firmware-atheros\"; known=1 ;;\n  0x14e4)      keep=\"$keep linux-firmware-broadcom\"; known=1 ;;\nesac; done\n# Si no se identifica el chip Wi-Fi/BT, NO se arriesga: se conservan los cuatro habituales\n[ \"$known\" = 1 ] || keep=\"$keep linux-firmware-realtek linux-firmware-mediatek linux-firmware-atheros linux-firmware-broadcom\"\n# Amplificadores Cirrus (CSC3551/CSC3556 en ACPI) usados por algunos portatiles Lenovo\nif compgen -G '/sys/bus/acpi/devices/CSC35*' >/dev/null; then keep=\"$keep linux-firmware-cirrus\"; fi\nkeep=$(printf '%s\\n' $keep | sort -u | tr '\\n' ' ')\necho \"LarryOS: firmware conservado -> $keep\"\nall=\"amd amdgpu atheros broadcom cirrus intel mediatek nvidia other radeon realtek ti\"\ndrop=\"\"\nfor p in $all; do case \" $keep \" in *\" linux-firmware-$p \"*) ;; *) drop=\"$drop linux-firmware-$p\";; esac; done\npacman -D --asexplicit $keep\npacman -Rdd --noconfirm linux-firmware $drop\npacman -Qq linux-firmware 2>/dev/null && { echo \"linux-firmware sigue instalado\" >&2; exit 1; } || true\n"
+  ],
+  "no_pkg_lookups": false,
+  "offline": false,
+  "silent": false,
+  "debug": false
+}
