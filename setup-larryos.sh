@@ -150,8 +150,8 @@ step_build() { need git; build_llama; build_sqlite_vec; install_llama_swap; inst
 install_ov_env() {
   log "Entorno Python 3.12 para OpenVINO (NPU) + exportación"
   [ -x "$VENV/bin/python" ] || uv venv --python 3.12 "$VENV"
-  # torch solo en CPU (hace falta únicamente para exportar a OpenVINO)
-  uv pip install --python "$VENV/bin/python" torch --index-url https://download.pytorch.org/whl/cpu
+  # torch y torchvision en CPU (evita conflictos de versión con optimum-intel)
+  uv pip install --python "$VENV/bin/python" torch torchvision --index-url https://download.pytorch.org/whl/cpu
   uv pip install --python "$VENV/bin/python" openvino openvino-genai openvino-tokenizers \
       "optimum-intel[openvino]" nncf "huggingface_hub[cli]" hf_transfer
 }
